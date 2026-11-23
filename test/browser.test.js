@@ -6,11 +6,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { GuestBrowser } from '../src/browser.js';
 
-function fakeLauncher({ navigationFails = false } = {}) {
+function fakeLauncher({ navigationFails = false, launchError = null, httpStatus = 200 } = {}) {
   const visits = [];
   const profiles = [];
   const launcher = { async launchPersistentContext(profile) {
     profiles.push(profile);
+    if (launchError) throw launchError;
     const context = new EventEmitter();
     const page = new EventEmitter();
     const mainFrame = {};
@@ -18,7 +19,7 @@ function fakeLauncher({ navigationFails = false } = {}) {
     page.goto = async url => {
       visits.push(url);
       if (navigationFails) throw new Error('offline');
-      return { ok: () => true };
+      return { ok: () => httpStatus < 400, status: () => httpStatus };
     };
     page.isClosed = () => false;
     context.pages = () => [page];
@@ -56,7 +57,9 @@ test('failed navigation does not mark referral delivered', async t => {
   const browser = new GuestBrowser(dir, 'RAN7TJA', fake.launcher);
   await assert.rejects(browser.start(), /offline/);
   await assert.rejects(access(path.join(dir, 'initial-navigation.json')));
-  assert.equal(browser.state, 'disconnected');
+  assert.equal(browser.state, 'retrying');
+  assert.equal(browser.status().lastError.phase, 'navigation');
+  assert.equal(browser.retries, 1);
   await browser.close();
 });
 test('operations are serialized even after an operation fails', async t => {
@@ -67,4 +70,50 @@ test('operations are serialized even after an operation fails', async t => {
   await assert.rejects(first);
   await second;
   assert.deepEqual(order, [1, 2]);
+});
+
+test('launch failure is recorded once and recovery clears the error on the same profile', async t => {
+  const dir = await folder(t);
+  const failed = fakeLauncher({ launchError: new Error("Executable doesn't exist: secret-path") });
+  const browser = new GuestBrowser(dir, 'RAN7TJA', failed.launcher);
+  await assert.rejects(browser.start());
+  assert.equal(browser.state, 'retrying');
+  assert.equal(browser.retries, 1);
+  assert.equal(browser.status().lastError.code, 'CHROMIUM_MISSING');
+  assert.equal(browser.status().lastError.phase, 'launch');
+  assert.ok(!JSON.stringify(browser.status()).includes('secret-path'));
+  const good = fakeLauncher();
+  browser.launcher = good.launcher;
+  await browser.recover();
+  assert.equal(browser.state, 'page-open');
+  assert.equal(browser.retries, 0);
+  assert.equal(browser.status().lastError, null);
+  assert.equal(good.profiles[0], failed.profiles[0]);
+  await browser.close();
+});
+
+test('HTTP refusal is diagnosed without marking the referral delivered', async t => {
+  const dir = await folder(t);
+  const fake = fakeLauncher({ httpStatus: 403 });
+  const browser = new GuestBrowser(dir, 'RAN7TJA', fake.launcher);
+  await assert.rejects(browser.start());
+  assert.equal(browser.status().lastError.code, 'GAME_HTTP_403');
+  assert.equal(browser.status().lastError.phase, 'navigation');
+  await assert.rejects(access(path.join(dir, 'initial-navigation.json')));
+  assert.equal(browser.context, null);
+  await browser.close();
+});
+
+test('storage failure is diagnosed before Chromium is launched', async t => {
+  const dir = await folder(t);
+  const { writeFile } = await import('node:fs/promises');
+  const blocked = path.join(dir, 'not-a-directory');
+  await writeFile(blocked, 'placeholder');
+  const fake = fakeLauncher();
+  const browser = new GuestBrowser(blocked, 'RAN7TJA', fake.launcher);
+  await assert.rejects(browser.start());
+  assert.equal(browser.status().lastError.phase, 'storage');
+  assert.equal(browser.retries, 1);
+  assert.equal(fake.profiles.length, 0);
+  await browser.close();
 });

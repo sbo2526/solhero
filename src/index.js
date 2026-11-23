@@ -21,11 +21,7 @@ async function maintain() {
   if (!stopping) timer = setTimeout(maintain, Math.min(120_000, 5000 * 2 ** Math.min(browser.retries, 5)));
 }
 async function boot() {
-  try { await browser.start(); } catch {
-    browser.state = 'retrying';
-    browser.retries++;
-    console.error('Browser startup failed; retrying with backoff. No account has been confirmed.');
-  }
+  try { await browser.start(); } catch { /* start() records safe diagnostics for logs and dashboard. */ }
   if (!stopping) timer = setTimeout(maintain, 5000);
 }
 async function shutdown(code = 0) {

@@ -18,6 +18,13 @@ async function refresh() {
     usable = state.state === 'page-open';
     const names = { starting: 'در حال راه‌اندازی', retrying: 'در انتظار تلاش مجدد', disconnected: 'مرورگر قطع شده', stopped: 'متوقف', 'page-open': 'صفحه باز است؛ حساب و دعوت هنوز تأیید نشده' };
     status.textContent = names[state.state] || 'نامشخص';
+    const diagnostic = document.querySelector('#diagnostic');
+    diagnostic.hidden = !state.lastError;
+    if (state.lastError) {
+      document.querySelector('#error-code').textContent = state.lastError.code;
+      document.querySelector('#error-detail').textContent = state.lastError.message;
+      document.querySelector('#error-meta').textContent = `مرحله: ${state.lastError.phase} · خطاهای پیاپی: ${state.retries} · زمان: ${state.lastError.at}`;
+    }
     game.classList.toggle('unavailable', !usable);
     if (!usable) return;
     const blob = await (await request('/api/screenshot')).blob();
